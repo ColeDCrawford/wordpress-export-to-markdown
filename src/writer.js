@@ -157,6 +157,7 @@ async function loadImageFilePromise(imageUrl) {
 }
 
 function getPostPath(post, config) {
+	console.log(post);
 	const dt = luxon.DateTime.fromISO(post.frontmatter.date);
 
 	// start with base output dir
