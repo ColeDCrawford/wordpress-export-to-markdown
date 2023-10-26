@@ -113,24 +113,6 @@ function collectPosts(data, postTypes, config) {
 	if (postTypes.length === 1) {
 		console.log(allPosts.length + ' posts found.');
 	}
-	function validatePost(post) {
-		if(!post.frontmatter.date) {
-			throw new Error(`Post missing date: ${JSON.stringify(post)}`)
-		}
-	}
-	  
-	// let invalidPosts = [];
-	// allPosts.forEach(post => {
-	//   try {
-	// 	validatePost(post);
-	//   } catch(err) {
-	// 	invalidPosts.push(post);
-	//   }
-	// })
-	// console.log("Invalid posts:", invalidPosts);
-
-	console.log("TEST POSTS ===========");
-	console.log(allPosts[0]);
 
 	return allPosts;
 }
@@ -171,6 +153,9 @@ function getPostDate(post) {
 
 function getCategories(post) {
 	const categories = processCategoryTags(post, 'category');
+	const events_categories = processCategoryTags(post, 'events_categories');
+	// merge the two categories arrays
+	categories.push(...events_categories);
 	return categories.filter(category => !settings.filter_categories.includes(category));
 }
 
