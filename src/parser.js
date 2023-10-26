@@ -15,7 +15,7 @@ async function parseFilePromise(config) {
 	});
 
 	const postTypes = getPostTypes(data, config);
-	const posts = collectPosts(data, postTypes, config);
+	const posts = await collectPosts(data, postTypes, config);
 
 	const images = [];
 	if (config.saveAttachedImages) {
@@ -48,42 +48,91 @@ function getItemsOfType(data, type) {
 	return data.rss.channel[0].item.filter(item => item.post_type[0] === type);
 }
 
-function collectPosts(data, postTypes, config) {
+function delay(ms) {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function collectPosts(data, postTypes, config) {
 	// this is passed into getPostContent() for the markdown conversion
 	const turndownService = translator.initTurndownService();
 
 	let allPosts = [];
-	postTypes.forEach(postType => {
+	for(const postType of postTypes) {
 		const postsForType = getItemsOfType(data, postType)
-			.filter(post => post.status[0] !== 'trash' && post.status[0] !== 'draft')
-			.map(post => ({
-				// meta data isn't written to file, but is used to help with other things
-				meta: {
-					id: getPostId(post),
-					slug: getPostSlug(post),
-					coverImageId: getPostCoverImageId(post),
-					type: postType,
-					imageUrls: []
-				},
-				frontmatter: {
-					title: getPostTitle(post),
-					date: getPostDate(post),
-					categories: getCategories(post),
-					tags: getTags(post)
-				},
-				content: translator.getPostContent(post, turndownService, config)
-			}));
+			.filter(post => post.status[0] !== 'trash' && post.status[0] !== 'draft');
+		const postsPromises = postsForType.map(async (post, index) => {
+			// meta data isn't written to file, but is used to help with other things
 
+			// Wait for a bit before processing this post if it's not the first one
+			if (index !== 0) {
+				await delay(5000); // delay of 1 second
+			}
+
+			let meta = {
+				id: getPostId(post),
+				slug: getPostSlug(post),
+				coverImageId: getPostCoverImageId(post), 
+				type: postType,
+				imageUrls: [],
+			}
+
+			let frontmatter = {
+				title: getPostTitle(post),
+				date: getPostDate(post),
+				categories: getCategories(post),
+				tags: getTags(post),
+				wp_id: getPostId(post),
+				wp_type: postType,
+				wp_slug: getPostSlug(post),
+				creator: getPostCreator(post),
+			}
+
+			if(postType !== 'ai1ec_event') {
+				return {
+					meta,
+					frontmatter,
+					content: translator.getPostContent(post, turndownService, config)
+				}
+			} else {
+				console.log(getPostId(post));
+				const eventMetadata = await getEventMetadata(getPostId(post));
+				if(!eventMetadata || !eventMetadata.event_data) {
+					console.error("eventMetadata or eventMetadata.event_data is missing", getPostId(post), eventMetadata);
+					return {
+						meta,
+						frontmatter,
+						content: translator.getPostContent(post, turndownService, config)
+					}
+				}
+				// otherwise enhance the frontmatter with event data
+				frontmatter = {
+					...frontmatter,
+					start_datetime: eventMetadata.event_data.start_datetime,
+					end_datetime: eventMetadata.event_data.end_datetime,
+					venue: eventMetadata.event_data.venue,
+					address: getAddress(eventMetadata),
+					ical_source_url: eventMetadata.event_data.ical_source_url,
+				}
+				return {
+					meta,
+					frontmatter,
+					content: translator.getPostContent(post, turndownService, config)
+				}
+			}
+		});
+			
 		if (postTypes.length > 1) {
 			console.log(`${postsForType.length} "${postType}" posts found.`);
 		}
 
-		allPosts.push(...postsForType);
-	});
+		const resolvedPostsForType = await Promise.all(postsPromises);
+		allPosts.push(...resolvedPostsForType.filter(Boolean)); // filter undefined Posts
+	}
 
 	if (postTypes.length === 1) {
 		console.log(allPosts.length + ' posts found.');
 	}
+	console.log("finished collecting posts");
 	return allPosts;
 }
 
@@ -200,6 +249,44 @@ function mergeImagesIntoPosts(images, posts) {
 			}
 		});
 	});
+}
+
+function getEventMetadata(id) {
+	return new Promise((resolve, reject) => {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 10000);
+
+		fetch(`https://dssg.fas.harvard.edu/wp-json/wp/v2/events/${id}`, {
+				signal: controller.signal
+			})
+			.then(res => {
+				clearTimeout(timeout);
+				if (!res.ok) {
+					console.error(`HTTP error! status: ${res.status}`);
+					return;
+				}
+				return res.json();
+			})
+			.then(data => {
+				resolve(data);
+			})
+			.catch(err => {
+				console.error(`Error fetching metadata for post ${id}:`, err);
+				reject(err);
+			});
+	});
+}
+
+function getAddress(eventMetadata){
+	let province = eventMetadata.event_data.province;
+	let city = eventMetadata.event_data.city;
+	let address = eventMetadata.event_data.address;
+	let postal_code = eventMetadata.event_data.postal_code;
+	return `${address}, ${city}, ${province}, ${postal_code}`
+}
+
+function getPostCreator(post){
+	return post.creator[0];
 }
 
 exports.parseFilePromise = parseFilePromise;
