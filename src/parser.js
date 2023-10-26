@@ -15,7 +15,7 @@ async function parseFilePromise(config) {
 	});
 
 	const postTypes = getPostTypes(data, config);
-	const posts = await collectPosts(data, postTypes, config);
+	const posts = collectPosts(data, postTypes, config);
 
 	const images = [];
 	if (config.saveAttachedImages) {
@@ -48,26 +48,21 @@ function getItemsOfType(data, type) {
 	return data.rss.channel[0].item.filter(item => item.post_type[0] === type);
 }
 
-function delay(ms) {
-	return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function collectPosts(data, postTypes, config) {
+function collectPosts(data, postTypes, config) {
 	// this is passed into getPostContent() for the markdown conversion
 	const turndownService = translator.initTurndownService();
 
 	let allPosts = [];
-	for(const postType of postTypes) {
+	// Load the extra post data from the export file ../../events.json
+	const eventsData = require('../../events.json');
+	// console.log(eventsData);
+
+	postTypes.forEach(postType => {
 		const postsForType = getItemsOfType(data, postType)
-			.filter(post => post.status[0] !== 'trash' && post.status[0] !== 'draft');
-		const postsPromises = postsForType.map(async (post, index) => {
+			.filter(post => post.status[0] !== 'trash' && post.status[0] !== 'draft')
+			.map(post => {
 			// meta data isn't written to file, but is used to help with other things
-
-			// Wait for a bit before processing this post if it's not the first one
-			if (index !== 0) {
-				await delay(5000); // delay of 1 second
-			}
-
+			// console.log(getPostId(post));
 			let meta = {
 				id: getPostId(post),
 				slug: getPostSlug(post),
@@ -75,7 +70,6 @@ async function collectPosts(data, postTypes, config) {
 				type: postType,
 				imageUrls: [],
 			}
-
 			let frontmatter = {
 				title: getPostTitle(post),
 				date: getPostDate(post),
@@ -85,54 +79,59 @@ async function collectPosts(data, postTypes, config) {
 				wp_type: postType,
 				wp_slug: getPostSlug(post),
 				creator: getPostCreator(post),
+			};
+			if (postType === 'ai1ec_event') {
+				// the event data is a json blob with keys of the post id
+				let eventData = eventsData[meta.id];
+				if (eventData) {
+					enrichedFrontmatter = {
+						...frontmatter,
+						start_datetime: eventData.event_data.start_datetime,
+						end_datetime: eventData.event_data.end_datetime,
+						venue: eventData.event_data.venue,
+						address: getAddress(eventData),
+						ical_source_url: eventData.event_data.ical_source_url
+					}
+					frontmatter = enrichedFrontmatter;
+				}
 			}
 
-			if(postType !== 'ai1ec_event') {
-				return {
-					meta,
-					frontmatter,
-					content: translator.getPostContent(post, turndownService, config)
-				}
-			} else {
-				console.log(getPostId(post));
-				const eventMetadata = await getEventMetadata(getPostId(post));
-				if(!eventMetadata || !eventMetadata.event_data) {
-					console.error("eventMetadata or eventMetadata.event_data is missing", getPostId(post), eventMetadata);
-					return {
-						meta,
-						frontmatter,
-						content: translator.getPostContent(post, turndownService, config)
-					}
-				}
-				// otherwise enhance the frontmatter with event data
-				frontmatter = {
-					...frontmatter,
-					start_datetime: eventMetadata.event_data.start_datetime,
-					end_datetime: eventMetadata.event_data.end_datetime,
-					venue: eventMetadata.event_data.venue,
-					address: getAddress(eventMetadata),
-					ical_source_url: eventMetadata.event_data.ical_source_url,
-				}
-				return {
-					meta,
-					frontmatter,
-					content: translator.getPostContent(post, turndownService, config)
-				}
+			return {
+				meta: meta,
+				frontmatter: frontmatter,
+				content: translator.getPostContent(post, turndownService, config)
 			}
 		});
-			
+
 		if (postTypes.length > 1) {
 			console.log(`${postsForType.length} "${postType}" posts found.`);
 		}
 
-		const resolvedPostsForType = await Promise.all(postsPromises);
-		allPosts.push(...resolvedPostsForType.filter(Boolean)); // filter undefined Posts
-	}
+		allPosts.push(...postsForType);
+	});
 
 	if (postTypes.length === 1) {
 		console.log(allPosts.length + ' posts found.');
 	}
-	console.log("finished collecting posts");
+	function validatePost(post) {
+		if(!post.frontmatter.date) {
+			throw new Error(`Post missing date: ${JSON.stringify(post)}`)
+		}
+	}
+	  
+	// let invalidPosts = [];
+	// allPosts.forEach(post => {
+	//   try {
+	// 	validatePost(post);
+	//   } catch(err) {
+	// 	invalidPosts.push(post);
+	//   }
+	// })
+	// console.log("Invalid posts:", invalidPosts);
+
+	console.log("TEST POSTS ===========");
+	console.log(allPosts[0]);
+
 	return allPosts;
 }
 
@@ -229,17 +228,30 @@ function collectScrapedImages(data, postTypes) {
 }
 
 function mergeImagesIntoPosts(images, posts) {
+	// console.log("Images:", images);
+
+	// function validateImage(image) {
+	// 	if(!image.id) console.log(`Image missing id: ${JSON.stringify(image)}`);
+	// }
+
+	// function validatePost(post){
+	// 	if(!post.meta) console.log(`Post missing id: ${JSON.stringify(post)}`);
+	// }
+	
+	// images.forEach(validateImage);
+	// posts.forEach(validatePost);
+
 	images.forEach(image => {
 		posts.forEach(post => {
 			let shouldAttach = false;
 
 			// this image was uploaded as an attachment to this post
-			if (image.postId === post.meta.id) {
+			if(post.meta && post.meta.id && image.postId && image.postId === post.meta.id){ // check for existence
 				shouldAttach = true;
 			}
 
 			// this image was set as the featured image for this post
-			if (image.id === post.meta.coverImageId) {
+			if (image.id && post.meta && post.meta.coverImageId && image.id === post.meta.coverImageId) {
 				shouldAttach = true;
 				post.frontmatter.coverImage = shared.getFilenameFromUrl(image.url);
 			}
@@ -251,38 +263,16 @@ function mergeImagesIntoPosts(images, posts) {
 	});
 }
 
-function getEventMetadata(id) {
-	return new Promise((resolve, reject) => {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 10000);
-
-		fetch(`https://dssg.fas.harvard.edu/wp-json/wp/v2/events/${id}`, {
-				signal: controller.signal
-			})
-			.then(res => {
-				clearTimeout(timeout);
-				if (!res.ok) {
-					console.error(`HTTP error! status: ${res.status}`);
-					return;
-				}
-				return res.json();
-			})
-			.then(data => {
-				resolve(data);
-			})
-			.catch(err => {
-				console.error(`Error fetching metadata for post ${id}:`, err);
-				reject(err);
-			});
-	});
-}
-
 function getAddress(eventMetadata){
 	let province = eventMetadata.event_data.province;
 	let city = eventMetadata.event_data.city;
 	let address = eventMetadata.event_data.address;
 	let postal_code = eventMetadata.event_data.postal_code;
-	return `${address}, ${city}, ${province}, ${postal_code}`
+
+	let addressComponents = [address, city, province, postal_code];
+	let validComponents = addressComponents.filter(component => component && component.trim() !== '');
+
+	return validComponents.join(', ');
 }
 
 function getPostCreator(post){
